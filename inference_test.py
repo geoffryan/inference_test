@@ -1,5 +1,7 @@
 from __future__ import print_function
+import math
 import sys
+import h5py as h5
 import numpy as np
 import matplotlib.pyplot as plt
 import emcee as em
@@ -16,15 +18,46 @@ def loglike_line(pars, X, Y, Yerr):
     dy = (pars[0]*X+pars[1] - Y) / Yerr
     return -0.5*np.sum(dy*dy)
 
-def logprior_line(pars, X, Y, Yerr):
-    return 0.0
+def logprior_line(pars):
+    return np.zeros(pars.shape[:-1])
 
 def logpost_line(pars, X, Y, Yerr):
-    return logprior_line(pars,X,Y,Yerr) + loglike_line(pars,X,Y,Yerr)
+    return logprior_line(pars) + loglike_line(pars,X,Y,Yerr)
 
-def sample_line(X, Y, Yerr, nwalkers=100, ndim=2, burn=100, run=100):
-    p0 = [0.05*np.random.rand(ndim) for i in xrange(nwalkers)]
-    sampler = em.EnsembleSampler(nwalkers, ndim, logpost_line, args=[X,Y,Yerr])
+def logprior_hyper(pars):
+    return 0.0
+
+def loglike_hyper(pars, samples, edges):
+    ndim = edges.shape[0]
+    nb = edges.shape[1]-1
+    pars2 = np.exp(np.reshape(pars, (ndim,nb)))
+
+    vals = pars2[-1]
+    for i in xrange(ndim-2,-1,-1):
+        par = pars2[i]
+        ns = np.ones(ndim-i)
+        ns[0] = nb
+        vals = np.tile(vals, ns) * par
+    ll = - (pars2*(edges[:,1:]-edges[:,:-1])).sum(axis=1).prod()
+    for i, chain in enumerate(samples):
+        #p = np.ones(pars2.shape[1])
+        #for j, edge in enumerate(edges):
+        #    res = np.histogram(chain[:,j], edge)
+        #    counts = res[0]
+        #    p *= pars2[j] * counts
+        res = np.histogramdd(chain, edges)
+        p = res[0] * vals
+
+        ll += math.log(np.sum(p))
+    
+    return ll
+
+def logpost_hyper(pars, samples, edges):
+    return logprior_hyper(pars) + loglike_hyper(pars, samples, edges)
+
+def sample_post(logpost, args, guess, nwalkers=100, ndim=2, burn=100, run=100):
+    p0 = [guess*np.random.normal(1.0,0.01,ndim) for i in xrange(nwalkers)]
+    sampler = em.EnsembleSampler(nwalkers, ndim, logpost, args=args)
     i=0
     print("Burning in...")
     for result in sampler.sample(p0, iterations=burn, storechain=False):
@@ -66,6 +99,13 @@ def plot_fit(chain, logprob, X, Y, Yerr, m, b, thin=10):
     labels = [r"$m$", r"$b$", "#"]
     fig2 = tri.corner(samples.reshape(run*nwalkers,ndim+1), truths=[m[i],b[i],0], labels=labels)
 
+def plot_hist(edges, counts, norm=1.0, *args, **kwargs):
+    sum = (counts*(edges[1:]-edges[:-1])).sum()
+    fac = norm/sum
+    x = np.array(list(zip(edges[:-1],edges[1:]))).flatten()
+    y = np.array(list(zip(counts,counts))).flatten()
+    plt.plot(x, fac*y, *args, **kwargs)
+
 if __name__ == "__main__":
 
     try:
@@ -73,19 +113,68 @@ if __name__ == "__main__":
     except:
         n = 3
 
-    m = np.random.normal(size=n)
-    b = np.random.normal(size=n)
-
     nwalkers = 100
     burn = 100
-    run = 200
+    run = 100
     ndim = 2
-    thin = 40
+    thin = 50
+    nb = 5
+    maxm =  5.0
+    minm = -5.0
+    maxb =  5.0
+    minb = -5.0
+
+    m = np.random.normal(size=n)
+    b = np.random.normal(size=n)
+    m[m>maxm] = maxm
+    m[m<minm] = minm
+    b[b>maxb] = maxb
+    b[b<minb] = minb
+
+    chains = np.zeros((n, nwalkers*(run/thin), ndim))
+    edges = np.zeros((ndim, nb+1))
+    edges[0] = np.linspace(minm, maxm, nb+1)
+    edges[1] = np.linspace(minb, maxb, nb+1)
+    guess = np.zeros((ndim, nb))
+    guess[0] = 1.0/(maxm-minm)
+    guess[1] = 1.0/(maxb-minb)
+    guess = np.log(guess)
 
     for i in xrange(n):
         print("{0:d} of {1:d}".format(i+1, n))
         X, Y, Yerr = make_line_data(m[i], b[i], 0.2, 20, 0.0, 5.0)
-        chain, logprob = sample_line(X, Y, Yerr, nwalkers, ndim, burn, run)
+        chain, logprob = sample_post(logpost_line, [X,Y,Yerr], [0.1,0.1], 
+                nwalkers, ndim, burn, run)
         plot_fit(chain, logprob, X, Y, Yerr, m, b, thin)
-        
-plt.show()
+        chains[i,:,:] = chain[:,::thin,:].reshape(-1,ndim)
+       
+    print(chains.shape)
+
+    hyper_burn = 1
+    hyper_run = 10
+    hyper_thin = 2
+
+    chain, logprob = sample_post(logpost_hyper, [chains,edges], 
+            guess.flatten(), nb*nwalkers, ndim*nb, hyper_burn, hyper_run)
+
+    #fig = tri.corner(chain.reshape(-1,ndim*nb))
+
+    print(chain.shape)
+    print(edges.shape)
+
+    plt.figure()
+    for i in xrange(nb*nwalkers):
+        for j in xrange(0,hyper_run,hyper_thin):
+            plt.subplot(2,1,1)
+            plot_hist(edges[0], np.exp(chain[i,j,:nb]), nb, color='k', alpha=0.05)
+            plt.subplot(2,1,2)
+            plot_hist(edges[1], np.exp(chain[i,j,nb:]), nb, color='k', alpha=0.05)
+    
+    plt.subplot(2,1,1)
+    plt.hist(m, bins=nb, range=[minm,maxm], color='r', histtype='step')
+    plt.xlabel(r"$m$")
+    plt.subplot(2,1,2)
+    plt.hist(b, bins=nb, range=[minb,maxb], color='r', histtype='step')
+    plt.ylabel(r"$b$")
+    
+    plt.show()
