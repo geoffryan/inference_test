@@ -25,6 +25,8 @@ def logpost_line(pars, X, Y, Yerr):
     return logprior_line(pars) + loglike_line(pars,X,Y,Yerr)
 
 def logprior_hyper(pars):
+    if (pars > 10.0).any():
+        return -np.inf
     return 0.0
 
 def loglike_hyper(pars, samples, edges):
@@ -40,11 +42,6 @@ def loglike_hyper(pars, samples, edges):
         vals = np.tile(vals, ns) * par
     ll = - (pars2*(edges[:,1:]-edges[:,:-1])).sum(axis=1).prod()
     for i, chain in enumerate(samples):
-        #p = np.ones(pars2.shape[1])
-        #for j, edge in enumerate(edges):
-        #    res = np.histogram(chain[:,j], edge)
-        #    counts = res[0]
-        #    p *= pars2[j] * counts
         res = np.histogramdd(chain, edges)
         p = res[0] * vals
 
@@ -53,6 +50,9 @@ def loglike_hyper(pars, samples, edges):
     return ll
 
 def logpost_hyper(pars, samples, edges):
+    lprior = logprior_hyper(pars)
+    if lprior == -np.inf:
+        return -np.inf
     return logprior_hyper(pars) + loglike_hyper(pars, samples, edges)
 
 def sample_post(logpost, args, guess, nwalkers=100, ndim=2, burn=100, run=100):
@@ -100,11 +100,10 @@ def plot_fit(chain, logprob, X, Y, Yerr, m, b, thin=10):
     fig2 = tri.corner(samples.reshape(run*nwalkers,ndim+1), truths=[m[i],b[i],0], labels=labels)
 
 def plot_hist(edges, counts, norm=1.0, *args, **kwargs):
-    sum = (counts*(edges[1:]-edges[:-1])).sum()
-    fac = norm/sum
     x = np.array(list(zip(edges[:-1],edges[1:]))).flatten()
-    y = np.array(list(zip(counts,counts))).flatten()
-    plt.plot(x, fac*y, *args, **kwargs)
+    bh = counts / np.diff(edges)
+    y = np.array(list(zip(bh,bh))).flatten()
+    plt.plot(x, y, *args, **kwargs)
 
 if __name__ == "__main__":
 
@@ -113,12 +112,12 @@ if __name__ == "__main__":
     except:
         n = 3
 
-    nwalkers = 100
-    burn = 100
-    run = 100
+    nwalkers = 50
+    burn = 200
+    run = 200
     ndim = 2
-    thin = 50
-    nb = 5
+    thin = 200
+    nb = 4
     maxm =  5.0
     minm = -5.0
     maxb =  5.0
@@ -145,14 +144,15 @@ if __name__ == "__main__":
         X, Y, Yerr = make_line_data(m[i], b[i], 0.2, 20, 0.0, 5.0)
         chain, logprob = sample_post(logpost_line, [X,Y,Yerr], [0.1,0.1], 
                 nwalkers, ndim, burn, run)
-        plot_fit(chain, logprob, X, Y, Yerr, m, b, thin)
+    #    plot_fit(chain, logprob, X, Y, Yerr, m, b, thin)
         chains[i,:,:] = chain[:,::thin,:].reshape(-1,ndim)
        
     print(chains.shape)
 
     hyper_burn = 1
-    hyper_run = 10
-    hyper_thin = 2
+    hyper_run = 1000
+    hyper_thin = 50
+    hyper_keep = 500
 
     chain, logprob = sample_post(logpost_hyper, [chains,edges], 
             guess.flatten(), nb*nwalkers, ndim*nb, hyper_burn, hyper_run)
@@ -164,11 +164,11 @@ if __name__ == "__main__":
 
     plt.figure()
     for i in xrange(nb*nwalkers):
-        for j in xrange(0,hyper_run,hyper_thin):
+        for j in xrange(hyper_keep,hyper_run,hyper_thin):
             plt.subplot(2,1,1)
-            plot_hist(edges[0], np.exp(chain[i,j,:nb]), nb, color='k', alpha=0.05)
+            plot_hist(edges[0], np.exp(chain[i,j,:nb]), 1.0, color='k', alpha=0.05)
             plt.subplot(2,1,2)
-            plot_hist(edges[1], np.exp(chain[i,j,nb:]), nb, color='k', alpha=0.05)
+            plot_hist(edges[1], np.exp(chain[i,j,nb:]), 1.0, color='k', alpha=0.05)
     
     plt.subplot(2,1,1)
     plt.hist(m, bins=nb, range=[minm,maxm], color='r', histtype='step')
